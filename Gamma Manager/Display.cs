@@ -32,7 +32,6 @@ namespace Gamma_Manager
             public float rBright = 0.0f;
             public float gBright = 0.0f;
             public float bBright = 0.0f;
-            public int monitorBrightness;
             public int monitorContrast;
         }
         #endregion
@@ -131,12 +130,10 @@ namespace Gamma_Manager
                 }
                 if (monitor.isExternal)
                 {
-                    monitor.monitorBrightness = ExternalMonitor.GetBrightness(monitor.PhysicalHandle);
                     monitor.monitorContrast = ExternalMonitor.GetContrast(monitor.PhysicalHandle);
                 }
                 else
                 {
-                    monitor.monitorBrightness = InternalMonitor.GetBrightness();
                     monitor.monitorContrast = -1;
                 }
                 monitors.Add(monitor);
@@ -155,6 +152,65 @@ namespace Gamma_Manager
                 DestroyPhysicalMonitors((uint)monitorArray.Length, monitorArray);
             }
         }*/
+
+        /// <summary>
+        /// Returns true if Windows HDR (Advanced Color) is currently enabled on the display
+        /// identified by the GDI device name (e.g. "\\.\DISPLAY1").
+        /// Uses QueryDisplayConfig + DisplayConfigGetDeviceInfo — no COM, no UWP required.
+        /// </summary>
+        public static bool IsHdrEnabled(string displayLink)
+        {
+            try
+            {
+                uint numPaths, numModes;
+                if (WinApi.GetDisplayConfigBufferSizes(WinApi.QDC_ONLY_ACTIVE_PATHS, out numPaths, out numModes) != 0)
+                    return false;
+
+                var paths = new WinApi.DISPLAYCONFIG_PATH_INFO[numPaths];
+                var modes = new WinApi.DISPLAYCONFIG_MODE_INFO[numModes];
+
+                if (WinApi.QueryDisplayConfig(WinApi.QDC_ONLY_ACTIVE_PATHS, ref numPaths, paths, ref numModes, modes, IntPtr.Zero) != 0)
+                    return false;
+
+                for (int i = 0; i < numPaths; i++)
+                {
+                    // Get the GDI source name (e.g. "\\.\DISPLAY1") for this path
+                    var sourceName = new WinApi.DISPLAYCONFIG_SOURCE_DEVICE_NAME();
+                    sourceName.header.type = WinApi.DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+                    sourceName.header.size = (uint)Marshal.SizeOf(sourceName);
+                    sourceName.header.adapterId = paths[i].sourceInfo.adapterId;
+                    sourceName.header.id = paths[i].sourceInfo.id;
+
+                    if (WinApi.DisplayConfigGetSourceDeviceName(ref sourceName) != 0)
+                        continue;
+
+                    string gdiName = sourceName.viewGdiDeviceName != null
+                        ? sourceName.viewGdiDeviceName.TrimEnd('\0')
+                        : string.Empty;
+
+                    if (!string.Equals(gdiName, displayLink, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    // Matched — now query advanced color (HDR) state for this target
+                    var colorInfo = new WinApi.DISPLAYCONFIG_ADVANCED_COLOR_INFO();
+                    colorInfo.header.type = WinApi.DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
+                    colorInfo.header.size = (uint)Marshal.SizeOf(colorInfo);
+                    colorInfo.header.adapterId = paths[i].targetInfo.adapterId;
+                    colorInfo.header.id = paths[i].targetInfo.id;
+
+                    if (WinApi.DisplayConfigGetAdvancedColorInfo(ref colorInfo) != 0)
+                        continue;
+
+                    // Bit 1 = advancedColorEnabled (HDR on)
+                    return (colorInfo.value & 0x2) != 0;
+                }
+            }
+            catch
+            {
+                // Silently ignore — HDR detection is best-effort
+            }
+            return false;
+        }
 
     }
 }

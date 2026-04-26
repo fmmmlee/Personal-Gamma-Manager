@@ -89,6 +89,117 @@ namespace Gamma_Manager
         [DllImport("User32.dll")]
         internal static extern bool EnumDisplayDevices(byte[] lpDevice, uint iDevNum, ref DISPLAY_DEVICE lpDisplayDevice, int dwFlags);
 
+        #region QueryDisplayConfig (HDR detection)
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct LUID
+        {
+            public uint LowPart;
+            public int HighPart;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DISPLAYCONFIG_RATIONAL
+        {
+            public uint Numerator;
+            public uint Denominator;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DISPLAYCONFIG_PATH_SOURCE_INFO
+        {
+            public LUID adapterId;
+            public uint id;
+            public uint modeInfoIdx;   // union: cloneGroupId:16 | sourceModeInfoIdx:16
+            public uint statusFlags;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DISPLAYCONFIG_PATH_TARGET_INFO
+        {
+            public LUID adapterId;
+            public uint id;
+            public uint modeInfoIdx;        // union: desktopModeInfoIdx:16 | targetModeInfoIdx:16
+            public uint outputTechnology;
+            public uint rotation;
+            public uint scaling;
+            public DISPLAYCONFIG_RATIONAL refreshRate;
+            public uint scanLineOrdering;
+            [MarshalAs(UnmanagedType.Bool)]
+            public bool targetAvailable;
+            public uint statusFlags;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DISPLAYCONFIG_PATH_INFO
+        {
+            public DISPLAYCONFIG_PATH_SOURCE_INFO sourceInfo;
+            public DISPLAYCONFIG_PATH_TARGET_INFO targetInfo;
+            public uint flags;
+        }
+
+        // Union variant occupies max(TARGET_MODE=48, SOURCE_MODE=20, DESKTOP_IMAGE_INFO=40) = 48 bytes
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DISPLAYCONFIG_MODE_INFO
+        {
+            public uint infoType;
+            public uint id;
+            public LUID adapterId;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 48)]
+            public byte[] modeInfo;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DISPLAYCONFIG_DEVICE_INFO_HEADER
+        {
+            public uint type;
+            public uint size;
+            public LUID adapterId;
+            public uint id;
+        }
+
+        // value bits: 0=advancedColorSupported, 1=advancedColorEnabled, 2=wideColorEnforced, 3=advancedColorForceDisabled
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DISPLAYCONFIG_ADVANCED_COLOR_INFO
+        {
+            public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+            public uint value;
+            public uint colorEncoding;
+            public uint bitsPerColorChannel;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct DISPLAYCONFIG_SOURCE_DEVICE_NAME
+        {
+            public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+            public string viewGdiDeviceName;    // e.g. "\\.\DISPLAY1"
+        }
+
+        public const uint QDC_ONLY_ACTIVE_PATHS = 0x00000002;
+        public const uint DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME = 1;
+        public const uint DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO = 9;
+
+        [DllImport("user32.dll")]
+        public static extern int GetDisplayConfigBufferSizes(uint flags, out uint numPathArrayElements, out uint numModeInfoArrayElements);
+
+        [DllImport("user32.dll")]
+        public static extern int QueryDisplayConfig(
+            uint flags,
+            ref uint numPathArrayElements,
+            [Out] DISPLAYCONFIG_PATH_INFO[] pathArray,
+            ref uint numModeInfoArrayElements,
+            [Out] DISPLAYCONFIG_MODE_INFO[] modeInfoArray,
+            IntPtr currentTopologyId);
+
+        [DllImport("user32.dll", EntryPoint = "DisplayConfigGetDeviceInfo")]
+        public static extern int DisplayConfigGetSourceDeviceName(ref DISPLAYCONFIG_SOURCE_DEVICE_NAME requestPacket);
+
+        [DllImport("user32.dll", EntryPoint = "DisplayConfigGetDeviceInfo")]
+        public static extern int DisplayConfigGetAdvancedColorInfo(ref DISPLAYCONFIG_ADVANCED_COLOR_INFO requestPacket);
+
+        #endregion
+
         public static byte[] ToLPTStr(this string str)
         {
             var lptArray = new byte[str.Length + 1];

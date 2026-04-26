@@ -22,7 +22,20 @@ namespace Gamma_Manager
 
         public IniFile(string IniPath = null)
         {
-            Path = new FileInfo(IniPath ?? EXE + ".ini").FullName;
+            // Resolve relative paths against the directory containing the .exe,
+            // NOT the current working directory (which is C:\Windows\System32 when
+            // launched from the Run registry key). Process.MainModule.FileName is
+            // reliable for single-file bundles where IncludeAllContentForSelfExtract
+            // causes AppContext.BaseDirectory to point at a runtime extraction temp
+            // folder instead of the original install location.
+            string fileName = IniPath ?? EXE + ".ini";
+            if (!System.IO.Path.IsPathRooted(fileName))
+            {
+                string exeDir = System.IO.Path.GetDirectoryName(
+                    System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName);
+                fileName = System.IO.Path.Combine(exeDir, fileName);
+            }
+            Path = new FileInfo(fileName).FullName;
         }
 
         public string Read(string Key, string Section = null)
