@@ -191,7 +191,20 @@ namespace Gamma_Manager
                     if (!string.Equals(gdiName, displayLink, StringComparison.OrdinalIgnoreCase))
                         continue;
 
-                    // Matched — now query advanced color (HDR) state for this target
+                    // Matched — query advanced color (HDR) state for this target.
+                    // Prefer the 24H2+ query: its activeColorMode distinguishes true HDR
+                    // from SDR-with-ACM, where the legacy advancedColorEnabled bit reads
+                    // true for both and would mask HDR<->SDR transitions.
+                    var colorInfo2 = new WinApi.DISPLAYCONFIG_ADVANCED_COLOR_INFO_2();
+                    colorInfo2.header.type = WinApi.DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2;
+                    colorInfo2.header.size = (uint)Marshal.SizeOf(colorInfo2);
+                    colorInfo2.header.adapterId = paths[i].targetInfo.adapterId;
+                    colorInfo2.header.id = paths[i].targetInfo.id;
+
+                    if (WinApi.DisplayConfigGetAdvancedColorInfo2(ref colorInfo2) == 0)
+                        return colorInfo2.activeColorMode == WinApi.DISPLAYCONFIG_ADVANCED_COLOR_MODE_HDR;
+
+                    // Pre-24H2 fallback
                     var colorInfo = new WinApi.DISPLAYCONFIG_ADVANCED_COLOR_INFO();
                     colorInfo.header.type = WinApi.DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
                     colorInfo.header.size = (uint)Marshal.SizeOf(colorInfo);

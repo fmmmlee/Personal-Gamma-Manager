@@ -69,6 +69,8 @@ namespace Gamma_Manager
         [DllImport("gdi32.dll")]
         private static extern IntPtr CreateDC(string lpszDriver, string lpszDevice, string lpszOutput, IntPtr lpInitData);
         [DllImport("gdi32.dll")]
+        private static extern bool DeleteDC(IntPtr hdc);
+        [DllImport("gdi32.dll")]
         private static extern bool SetDeviceGammaRamp(IntPtr hdc, ushort[,] ramp);
         [DllImport("gdi32.dll")]
         private static extern bool GetDeviceGammaRamp(IntPtr hdc, ushort[,] lpRamp);
@@ -87,7 +89,23 @@ namespace Gamma_Manager
         public static void SetGammaRamp(string display_dc, ushort[,] newGammaArray)
         {
             IntPtr hDC = CreateDC(null, display_dc, null, IntPtr.Zero);
+            if (hDC == IntPtr.Zero) return;
             SetDeviceGammaRamp(hDC, newGammaArray);
+            DeleteDC(hDC);
+        }
+
+        /// <summary>
+        /// Reads the gamma ramp currently loaded in hardware, or null if the display
+        /// can't be queried right now (e.g. mid mode-transition).
+        /// </summary>
+        public static ushort[,] GetGammaRamp(string display_dc)
+        {
+            IntPtr hDC = CreateDC(null, display_dc, null, IntPtr.Zero);
+            if (hDC == IntPtr.Zero) return null;
+            ushort[,] ramp = new ushort[3, 256];
+            bool ok = GetDeviceGammaRamp(hDC, ramp);
+            DeleteDC(hDC);
+            return ok ? ramp : null;
         }
     }
 }

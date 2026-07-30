@@ -8,6 +8,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Threading;
 using Microsoft.Win32;
 
 namespace Gamma_Manager
@@ -43,6 +44,12 @@ namespace Gamma_Manager
 
         private const string StartupRegName = "GammaManager";
         private const string AutoSwitchSection = "AutoSwitch";
+
+        // Re-assert scheduling: pending one-shot retries after a display event,
+        // plus a slow watchdog that repairs the ramp if the driver clears it
+        // outside any event we get to see.
+        private readonly List<DispatcherTimer> pendingReasserts = new List<DispatcherTimer>();
+        private DispatcherTimer rampWatchdog;
 
         // ---------------------------------------------------------------------
         // Constructor
@@ -87,6 +94,14 @@ namespace Gamma_Manager
             RebuildTrayMenu();
 
             SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+            SystemEvents.PowerModeChanged += OnPowerModeChanged;
+
+            // Modern-standby resume and HDR modesets can clear the hardware LUT
+            // without any event reaching us (or after our event-time write) — a
+            // slow periodic verify-and-repair pass is the backstop.
+            rampWatchdog = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+            rampWatchdog.Tick += (s, e) => ReassertAll(force: false);
+            rampWatchdog.Start();
 
             // Apply DWM attributes before first render to avoid a flash of unstyled chrome.
             SourceInitialized += (s, e) => ApplyDwmEffects();
@@ -111,6 +126,10 @@ namespace Gamma_Manager
             }
             SaveLastState();
             SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            rampWatchdog?.Stop();
+            foreach (var t in pendingReasserts) t.Stop();
+            pendingReasserts.Clear();
             notifyIcon?.Dispose();
         }
 
@@ -806,28 +825,100 @@ namespace Gamma_Manager
             }
         }
 
-        private void CheckAndApplyHdrProfiles()
+        /// <summary>
+        /// Bring the hardware LUT back in line with what we intend, for every display.
+        /// If auto-switch is on, first re-check the HDR/SDR mode and load the matching
+        /// profile on a flip; then rewrite the ramp from the display's current state.
+        /// force=true writes unconditionally (event path — readback is unreliable while
+        /// a modeset is in flight). force=false writes only when the ramp has visibly
+        /// drifted from intent (watchdog path — avoids redundant writes every tick).
+        /// </summary>
+        private void ReassertAll(bool force)
         {
-            if (ChkAutoSwitch.IsChecked != true) return;
+            bool autoSwitch = ChkAutoSwitch.IsChecked == true;
             foreach (var d in displays)
             {
-                bool isHdrNow = Display.IsHdrEnabled(d.displayLink);
-                if (!lastHdrStates.TryGetValue(d.displayLink, out bool wasHdr))
+                if (autoSwitch)
                 {
+                    bool isHdrNow = Display.IsHdrEnabled(d.displayLink);
+                    bool modeChanged = !lastHdrStates.TryGetValue(d.displayLink, out bool wasHdr)
+                                       || isHdrNow != wasHdr;
                     lastHdrStates[d.displayLink] = isHdrNow;
-                    continue;
+                    if (modeChanged)
+                    {
+                        string key = d.displayName + (isHdrNow ? "_HDR" : "_SDR");
+                        ApplyProfileToDisplay(iniFile.Read(key, AutoSwitchSection), d);
+                        continue; // freshly written; the retry tail re-asserts it below anyway
+                    }
                 }
-                if (isHdrNow == wasHdr) continue;
-                lastHdrStates[d.displayLink] = isHdrNow;
-                string key = d.displayName + (isHdrNow ? "_HDR" : "_SDR");
-                ApplyProfileToDisplay(iniFile.Read(key, AutoSwitchSection), d);
+
+                ushort[,] expected = Gamma.CreateGammaRamp(
+                    d.rGamma, d.gGamma, d.bGamma,
+                    d.rContrast, d.gContrast, d.bContrast,
+                    d.rBright, d.gBright, d.bBright);
+
+                if (force || RampDrifted(d.displayLink, expected))
+                    Gamma.SetGammaRamp(d.displayLink, expected);
+            }
+        }
+
+        // GetDeviceGammaRamp does not read back byte-identical values on all drivers
+        // (the Adreno driver stores the LUT in a segmented hardware format and returns
+        // a reconstruction), so compare a few sample points with a wide tolerance.
+        // A reset-to-identity ramp differs from any meaningful correction by far more
+        // than the readback error; near-identity corrections may slip under the
+        // tolerance, but for those the visual difference is equally negligible.
+        private static readonly int[] rampSampleIndices = { 16, 32, 64, 128, 192, 224, 248 };
+        private const int RampTolerance = 4096;
+
+        private static bool RampDrifted(string displayLink, ushort[,] expected)
+        {
+            ushort[,] actual = Gamma.GetGammaRamp(displayLink);
+            if (actual == null) return false; // can't read right now — don't thrash
+            foreach (int i in rampSampleIndices)
+                for (int ch = 0; ch < 3; ch++)
+                    if (Math.Abs(actual[ch, i] - expected[ch, i]) > RampTolerance)
+                        return true;
+            return false;
+        }
+
+        /// <summary>
+        /// Re-assert now, then again along a short tail. The HDR&lt;-&gt;SDR modeset
+        /// completes asynchronously after DisplaySettingsChanged fires and the driver
+        /// resets the LUT at the end of the transition, so a single write at event
+        /// time gets clobbered — the tail outlasts the transition.
+        /// </summary>
+        private void ScheduleReassert()
+        {
+            foreach (var t in pendingReasserts) t.Stop();
+            pendingReasserts.Clear();
+
+            ReassertAll(force: true);
+            foreach (int delayMs in new[] { 500, 2000, 5000 })
+            {
+                var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(delayMs) };
+                timer.Tick += (s, e) =>
+                {
+                    timer.Stop();
+                    pendingReasserts.Remove(timer);
+                    ReassertAll(force: true);
+                };
+                pendingReasserts.Add(timer);
+                timer.Start();
             }
         }
 
         private void OnDisplaySettingsChanged(object sender, EventArgs e)
         {
-            if (Dispatcher.CheckAccess()) CheckAndApplyHdrProfiles();
-            else Dispatcher.Invoke(CheckAndApplyHdrProfiles);
+            if (Dispatcher.CheckAccess()) ScheduleReassert();
+            else Dispatcher.Invoke(ScheduleReassert);
+        }
+
+        private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+        {
+            if (e.Mode != PowerModes.Resume) return;
+            if (Dispatcher.CheckAccess()) ScheduleReassert();
+            else Dispatcher.Invoke(ScheduleReassert);
         }
     }
 }

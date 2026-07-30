@@ -168,6 +168,19 @@ namespace Gamma_Manager
             public uint bitsPerColorChannel;
         }
 
+        // Windows 11 24H2+ variant. Unlike the legacy struct's advancedColorEnabled bit
+        // (which also reads true for SDR-with-ACM), activeColorMode reports the actual
+        // pipeline state: 0 = SDR, 1 = WCG/ACM, 2 = HDR.
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DISPLAYCONFIG_ADVANCED_COLOR_INFO_2
+        {
+            public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+            public uint value;
+            public uint colorEncoding;
+            public uint bitsPerColorChannel;
+            public uint activeColorMode;
+        }
+
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         public struct DISPLAYCONFIG_SOURCE_DEVICE_NAME
         {
@@ -179,6 +192,8 @@ namespace Gamma_Manager
         public const uint QDC_ONLY_ACTIVE_PATHS = 0x00000002;
         public const uint DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME = 1;
         public const uint DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO = 9;
+        public const uint DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2 = 15;
+        public const uint DISPLAYCONFIG_ADVANCED_COLOR_MODE_HDR = 2;
 
         [DllImport("user32.dll")]
         public static extern int GetDisplayConfigBufferSizes(uint flags, out uint numPathArrayElements, out uint numModeInfoArrayElements);
@@ -197,6 +212,9 @@ namespace Gamma_Manager
 
         [DllImport("user32.dll", EntryPoint = "DisplayConfigGetDeviceInfo")]
         public static extern int DisplayConfigGetAdvancedColorInfo(ref DISPLAYCONFIG_ADVANCED_COLOR_INFO requestPacket);
+
+        [DllImport("user32.dll", EntryPoint = "DisplayConfigGetDeviceInfo")]
+        public static extern int DisplayConfigGetAdvancedColorInfo2(ref DISPLAYCONFIG_ADVANCED_COLOR_INFO_2 requestPacket);
 
         #endregion
 
